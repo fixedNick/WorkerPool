@@ -11,12 +11,26 @@ import (
 	"time"
 )
 
-type Task struct {
+type Task interface {
+	Execute(ctx context.Context, workerID int, client *http.Client) (*TaskResult, *TaskError)
+	Id() int
+	Url() string
+}
+
+type HTTPTask struct {
 	id  int
 	url string
 }
 
-func (task Task) execute(ctx context.Context, wid int, client *http.Client) (*TaskResult, *TaskError) {
+func (t HTTPTask) Id() int {
+	return t.id
+}
+
+func (t HTTPTask) Url() string {
+	return t.url
+}
+
+func (task HTTPTask) Execute(ctx context.Context, wid int, client *http.Client) (*TaskResult, *TaskError) {
 	req, err := http.NewRequestWithContext(ctx, "GET", task.url, nil)
 	if err != nil {
 		return nil, &TaskError{
@@ -68,7 +82,8 @@ type TaskResult struct {
 
 	url string
 
-	duration time.Duration
+	totalDuration time.Duration
+	duration      time.Duration
 }
 
 type Config struct {
@@ -148,7 +163,7 @@ func (wp *WorkerPool) worker(wid int, source <-chan Task) {
 			start := time.Now()
 			result, err := wp.processWithRetry(wid, task)
 			if err == nil {
-				result.duration = time.Since(start)
+				result.totalDuration = time.Since(start)
 			}
 
 			if err != nil {
@@ -168,22 +183,26 @@ func (wp *WorkerPool) processWithRetry(wid int, task Task) (*TaskResult, *TaskEr
 
 		if attempt > 0 {
 			delay := wp.retryManager.GetDelay(attempt)
+			log.Printf("[url -> %s] Retry in %.2fs [attempt -> %d/%d] ", task.Url(), delay.Seconds(), attempt, wp.retryManager.MaxRetries())
 			select {
 			case <-time.After(delay):
 			case <-wp.ctx.Done():
 				return nil, &TaskError{
-					url:    task.url,
-					taskID: task.id,
+					url:    task.Url(),
+					taskID: task.Id(),
 					err:    wp.ctx.Err(),
 				}
 			}
 		}
 
 		ctx, cancel := context.WithTimeout(wp.ctx, wp.config.TaskTimeout)
-		res, taskErr := task.execute(ctx, wid, wp.client)
+		start := time.Now()
+		res, taskErr := task.Execute(ctx, wid, wp.client)
+		execDuration := time.Since(start)
 		cancel()
 
 		if taskErr == nil {
+			res.duration = execDuration
 			return res, nil
 		}
 
@@ -191,7 +210,6 @@ func (wp *WorkerPool) processWithRetry(wid int, task Task) (*TaskResult, *TaskEr
 			lastError = taskErr
 			break
 		}
-		log.Print("Retry [attempt:", attempt, "][url:", task.url, "]")
 	}
 
 	return nil, lastError
@@ -221,7 +239,7 @@ func Run() {
 	tasks := genTasks(buffSize)
 
 	wp := NewWorkerPool(context.Background(), Config{
-		WorkerCount:     3,
+		WorkerCount:     5,
 		QueueSize:       20,
 		TaskTimeout:     time.Second * 2,
 		ShutdownTimeout: time.Second * 5,
@@ -231,8 +249,9 @@ func Run() {
 	c := 0
 	for result := range results {
 		c++
-		fmt.Printf("| [%dms] -- %d:[%d] STATUS `%d` --> LENGTH `%d\n\r",
+		fmt.Printf("| [%dms (T:%.2d)] -- %d:[%d] STATUS `%d` --> LENGTH `%d\n\r",
 			result.duration.Milliseconds(),
+			result.totalDuration.Seconds(),
 			result.workerID,
 			result.taskID,
 			result.responseStatus,
@@ -244,7 +263,7 @@ func Run() {
 	for e := range wp.errorQueue {
 		ec++
 		fmt.Println("! ---")
-		fmt.Printf("[id:%d] Url: %s\n\rErr: %s\n\r", e.taskID, e.url, e.err.Error())
+		fmt.Printf("[id:%f] Url: %s\n\rErr: %s\n\r", e.taskID, e.url, e.err.Error())
 		fmt.Println("! ---")
 	}
 
@@ -264,9 +283,9 @@ func genTasks(buffSize int) <-chan Task {
 
 	go func() {
 		defer close(tasks)
-		for i := 0; i < 1; i++ {
+		for i := 0; i < 10; i++ {
 			for idx, url := range urls {
-				task := Task{
+				task := HTTPTask{
 					id:  idx * (i + 1),
 					url: url,
 				}

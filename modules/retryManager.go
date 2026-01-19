@@ -16,6 +16,10 @@ type RetryManager struct {
 	delay      time.Duration `yaml:"delay"`
 }
 
+func (rm *RetryManager) MaxRetries() int {
+	return rm.maxRetries
+}
+
 func NewRetryManager(cfgPath string) *RetryManager {
 	_, err := os.Stat(cfgPath)
 	if err != nil {
