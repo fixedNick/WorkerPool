@@ -1,40 +1,40 @@
-package ratelimiter
+package rpmlimiter
 
 import (
 	"context"
 	"time"
 )
 
-// Follows limit of tasks per minute setted via `rate`
+// Follows limit of tasks per minute setted via `rpm`
 type RateLimiter struct {
-	rate      int // count of task per minute
+	rpm       int // count of task per minute
 	closeChan chan struct{}
 	tokens    chan struct{}
 }
 
-func NewRateLimiter(ctx context.Context, rate int) *RateLimiter {
-	if rate <= 0 {
-		panic("rate should be > 0")
+func NewRateLimiter(ctx context.Context, rpm int) *RateLimiter {
+	if rpm <= 0 {
+		panic("rpm should be > 0")
 	}
 
 	rl := &RateLimiter{
-		rate:      rate,
+		rpm:       rpm,
 		closeChan: make(chan struct{}),
-		tokens:    make(chan struct{}, rate),
+		tokens:    make(chan struct{}, rpm),
 	}
 
 	go rl.fillTokens(ctx)
 	return rl
 }
 
-// filling channel with `rate` to future read from this channel.
+// filling channel with `rpm` to future read from this channel.
 // If channel is empty - wait
-// Otherwise current rate is lower than limit - continue
+// Otherwise current rpm is lower than limit - continue
 func (rl *RateLimiter) fillTokens(ctx context.Context) {
-	t := time.NewTicker(time.Second / time.Duration(rl.rate))
+	t := time.NewTicker(time.Minute / time.Duration(rl.rpm))
 	defer t.Stop()
 
-	for i := 0; i < rl.rate; i++ {
+	for i := 0; i < rl.rpm; i++ {
 		rl.tokens <- struct{}{}
 	}
 
