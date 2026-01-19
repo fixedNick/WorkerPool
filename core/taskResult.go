@@ -1,12 +1,15 @@
 package core
 
-import "time"
+import (
+	"time"
+)
 
 type TaskResult struct {
 	workerID       int
 	taskID         int
 	contentLen     int
 	responseStatus int
+	retries        int
 
 	url string
 
@@ -36,12 +39,11 @@ func (t *TaskResult) ResponseStatus() int          { return t.responseStatus }
 func (t *TaskResult) Url() string                  { return t.url }
 func (t *TaskResult) Duration() time.Duration      { return t.duration }
 func (t *TaskResult) TotalDuration() time.Duration { return t.totalDuration }
+func (t *TaskResult) Retries() int                 { return t.retries }
 
 // setters
-func (t *TaskResult) SetDuration(d time.Duration) {
-	t.duration = d
-}
+func (t *TaskResult) SetDuration(d time.Duration)      { t.duration = d }
+func (t *TaskResult) SetTotalDuration(d time.Duration) { t.totalDuration = d }
+func (t *TaskResult) SetRetries(r int)                 { t.retries = r }
 
-func (t *TaskResult) SetTotalDuration(d time.Duration) {
-	t.totalDuration = d
-}
+//

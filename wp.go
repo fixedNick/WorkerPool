@@ -135,7 +135,8 @@ func (wp *WorkerPool) processWithRetry(wid int, task core.Task) (*core.TaskResul
 				return nil, core.NewTaskError(
 					task.Url(),
 					task.Id(),
-					wp.ctx.Err())
+					wp.ctx.Err(),
+				)
 			}
 		}
 
@@ -147,6 +148,7 @@ func (wp *WorkerPool) processWithRetry(wid int, task core.Task) (*core.TaskResul
 
 		if taskErr == nil {
 			res.SetDuration(execDuration)
+			res.SetRetries(attempt)
 			return res, nil
 		}
 

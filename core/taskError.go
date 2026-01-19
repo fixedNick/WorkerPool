@@ -2,8 +2,8 @@ package core
 
 type TaskError struct {
 	url    string
-	taskID int
 	err    error
+	taskID int
 }
 
 func NewTaskError(url string, taskID int, err error) *TaskError {
