@@ -7,7 +7,8 @@ import (
 	"io"
 	"log"
 	errs "main/channels/worker_pool/workerpool/errors"
-	"main/channels/worker_pool/workerpool/modules"
+	ratelimiter "main/channels/worker_pool/workerpool/modules/rateLimiter"
+	retry "main/channels/worker_pool/workerpool/modules/retryManager"
 	"net/http"
 	"sync"
 	"time"
@@ -92,11 +93,10 @@ type Config struct {
 	WorkerCount int
 	QueueSize   int
 
+	RateLimit int
+
 	TaskTimeout     time.Duration
 	ShutdownTimeout time.Duration
-
-	RetryDelay time.Duration
-	MaxRetries int
 }
 
 type WorkerPool struct {
@@ -108,7 +108,8 @@ type WorkerPool struct {
 	taskQueue    chan Task
 
 	// modules
-	retryManager *modules.RetryManager
+	retryManager *retry.RetryManager
+	rateLimiter  *ratelimiter.RateLimiter
 
 	wg     sync.WaitGroup
 	client *http.Client
@@ -122,7 +123,8 @@ func NewWorkerPool(ctx context.Context, config Config) *WorkerPool {
 		errorQueue:   make(chan *TaskError, config.QueueSize),
 		taskQueue:    make(chan Task, config.QueueSize),
 		wg:           sync.WaitGroup{},
-		retryManager: modules.NewRetryManager("./channels/worker_pool/workerpool/cfg/retry.yaml"),
+		retryManager: retry.NewRetryManager("./channels/worker_pool/workerpool/cfg/retry.yaml"),
+		rateLimiter:  ratelimiter.NewRateLimiter(ctx, config.RateLimit),
 		client: &http.Client{
 			Transport: &http.Transport{
 				MaxIdleConns:        config.WorkerCount * 2,
@@ -173,6 +175,11 @@ func (wp *WorkerPool) worker(wid int) {
 				// channel closed, stop worker
 				return
 			}
+
+			if err := wp.rateLimiter.Wait(wp.ctx); err != nil {
+				return
+			}
+
 			start := time.Now()
 			result, err := wp.processWithRetry(wid, task)
 			if err == nil {
@@ -253,6 +260,7 @@ func Run() {
 		QueueSize:       20,
 		TaskTimeout:     time.Second * 2,
 		ShutdownTimeout: time.Second * 5,
+		RateLimit:       50,
 	})
 
 	genTasks(wp)
