@@ -2,9 +2,11 @@ package workerpool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	errs "main/channels/worker_pool/workerpool/errors"
 	"main/channels/worker_pool/workerpool/modules"
 	"net/http"
 	"sync"
@@ -118,7 +120,7 @@ func NewWorkerPool(ctx context.Context, config Config) *WorkerPool {
 		ctx:          ctx,
 		resultsQueue: make(chan *TaskResult, config.QueueSize),
 		errorQueue:   make(chan *TaskError, config.QueueSize),
-		// taskQueue:    make(chan Task, config.QueueSize),
+		taskQueue:    make(chan Task, config.QueueSize),
 		wg:           sync.WaitGroup{},
 		retryManager: modules.NewRetryManager("./channels/worker_pool/workerpool/cfg/retry.yaml"),
 		client: &http.Client{
@@ -131,11 +133,22 @@ func NewWorkerPool(ctx context.Context, config Config) *WorkerPool {
 	}
 }
 
-func (wp *WorkerPool) Start(source <-chan Task) <-chan *TaskResult {
+func (wp *WorkerPool) Submit(task Task) error {
+	select {
+	case wp.taskQueue <- task:
+		return nil
+	case <-wp.ctx.Done():
+		return wp.ctx.Err()
+	default:
+		return &errs.QueuFullError{}
+	}
+}
+
+func (wp *WorkerPool) Start() <-chan *TaskResult {
 	for i := 0; i < wp.config.WorkerCount; i++ {
 		wp.wg.Add(1)
 		go func(n int) {
-			wp.worker(n, source)
+			wp.worker(n)
 		}(i)
 	}
 
@@ -148,14 +161,14 @@ func (wp *WorkerPool) Start(source <-chan Task) <-chan *TaskResult {
 	return wp.resultsQueue
 }
 
-func (wp *WorkerPool) worker(wid int, source <-chan Task) {
+func (wp *WorkerPool) worker(wid int) {
 	defer wp.wg.Done()
 
 	for {
 		select {
 		case <-wp.ctx.Done():
 			return
-		case task, ok := <-source:
+		case task, ok := <-wp.taskQueue:
 			if !ok {
 				// channel closed, stop worker
 				return
@@ -235,21 +248,21 @@ func (wp *WorkerPool) GracefulShutdown(timeout time.Duration) {
 
 func Run() {
 
-	buffSize := 20
-	tasks := genTasks(buffSize)
-
 	wp := NewWorkerPool(context.Background(), Config{
 		WorkerCount:     5,
 		QueueSize:       20,
 		TaskTimeout:     time.Second * 2,
 		ShutdownTimeout: time.Second * 5,
 	})
-	results := wp.Start(tasks)
+
+	genTasks(wp)
+
+	results := wp.Start()
 
 	c := 0
 	for result := range results {
 		c++
-		fmt.Printf("| [%dms (T:%.2d)] -- %d:[%d] STATUS `%d` --> LENGTH `%d\n\r",
+		fmt.Printf("| [%dms(%.2fs)] -- %d:[%d] STATUS `%d` --> LENGTH `%d\n\r",
 			result.duration.Milliseconds(),
 			result.totalDuration.Seconds(),
 			result.workerID,
@@ -263,7 +276,7 @@ func Run() {
 	for e := range wp.errorQueue {
 		ec++
 		fmt.Println("! ---")
-		fmt.Printf("[id:%f] Url: %s\n\rErr: %s\n\r", e.taskID, e.url, e.err.Error())
+		fmt.Printf("[id:%d ] Url: %s\n\rErr: %s\n\r", e.taskID, e.url, e.err.Error())
 		fmt.Println("! ---")
 	}
 
@@ -271,9 +284,7 @@ func Run() {
 
 }
 
-func genTasks(buffSize int) <-chan Task {
-	tasks := make(chan Task, buffSize)
-
+func genTasks(wp *WorkerPool) {
 	urls := []string{
 		"https://google.com/", "https://vk.com/", "https://amazon.com/",
 		"https://reddit.com/", "https://mail.ru/", "https://example.com/",
@@ -281,18 +292,33 @@ func genTasks(buffSize int) <-chan Task {
 		"https://www.randomlists.com/urls", "https://habr.com/ru/articles/901128/", "https://e5450.com/socket-2011-3/e5-2600-v3/xeon-e5-2640-v3/",
 	}
 
-	go func() {
-		defer close(tasks)
+	delay := time.Millisecond * 500
+
+	go func(delay time.Duration) {
 		for i := 0; i < 10; i++ {
 			for idx, url := range urls {
 				task := HTTPTask{
 					id:  idx * (i + 1),
 					url: url,
 				}
-				tasks <- task
+
+				for {
+					// Possible queue full error
+					// Check and if true - delay
+					var queuFull *errs.QueuFullError
+					err := wp.Submit(task)
+					if err == nil {
+						break
+					}
+
+					if errors.As(err, &queuFull) {
+						time.Sleep(delay)
+						continue
+					} else {
+						panic(err)
+					}
+				}
 			}
 		}
-	}()
-
-	return tasks
+	}(delay)
 }
