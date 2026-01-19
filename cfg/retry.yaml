@@ -1,0 +1,3 @@
+backoff: true
+maxRetries: 5
+delay: 1000
