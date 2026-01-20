@@ -50,7 +50,7 @@ func NewRetryManager(cfgPath string) *RetryManager {
 	return &rm
 }
 
-// Decide: should you make retry or not
+// Decide: should you make retry or not.
 // If received `err` is type of `Timeout` - we should make retry, otherwise - no
 // If currentAttempt >= rm.maxRetries - no
 func (rm *RetryManager) ShouldRetry(err error, attempt int) bool {

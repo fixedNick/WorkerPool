@@ -10,6 +10,7 @@ import (
 	ratelimiter "main/channels/worker_pool/workerpool/modules/rateLimiter"
 	retry "main/channels/worker_pool/workerpool/modules/retryManager"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -22,6 +23,8 @@ type Config struct {
 
 	TaskTimeout     time.Duration
 	ShutdownTimeout time.Duration
+
+	MetricsEnable bool
 }
 
 type WorkerPool struct {
@@ -35,6 +38,7 @@ type WorkerPool struct {
 	// modules
 	retryManager *retry.RetryManager
 	rateLimiter  *ratelimiter.RateLimiter
+	metrics      core.MetricsCollector
 
 	wg     sync.WaitGroup
 	client *http.Client
@@ -47,6 +51,7 @@ func NewWorkerPool(ctx context.Context, config Config) *WorkerPool {
 		resultsQueue: make(chan *core.TaskResult, config.QueueSize),
 		errorQueue:   make(chan *core.TaskError, config.QueueSize),
 		taskQueue:    make(chan core.Task, config.QueueSize),
+		metrics:      &core.Metrics{},
 		wg:           sync.WaitGroup{},
 		retryManager: retry.NewRetryManager("./channels/worker_pool/workerpool/cfg/retry.yaml"),
 		rateLimiter:  ratelimiter.NewRateLimiter(ctx, config.RateLimit),
@@ -63,6 +68,9 @@ func NewWorkerPool(ctx context.Context, config Config) *WorkerPool {
 func (wp *WorkerPool) Submit(task core.Task) error {
 	select {
 	case wp.taskQueue <- task:
+		if wp.config.MetricsEnable {
+			wp.metrics.RecordQueuePush()
+		}
 		return nil
 	case <-wp.ctx.Done():
 		return wp.ctx.Err()
@@ -77,6 +85,10 @@ func (wp *WorkerPool) Start() <-chan *core.TaskResult {
 		go func(n int) {
 			wp.worker(n)
 		}(i)
+	}
+
+	if wp.config.MetricsEnable {
+		go wp.metrics.StartLogging(wp.ctx, os.Stdout, time.Second*3)
 	}
 
 	go func() {
@@ -105,17 +117,21 @@ func (wp *WorkerPool) worker(wid int) {
 				return
 			}
 
-			start := time.Now()
-			result, err := wp.processWithRetry(wid, task)
-			if err == nil {
-				result.SetTotalDuration(time.Since(start))
+			if wp.config.MetricsEnable {
+				wp.metrics.RecordQueuePop()
+				wp.metrics.RecordTaskStart()
 			}
 
-			if err != nil {
-				wp.errorQueue <- err
-			} else {
+			start := time.Now()
+			result, err := wp.processWithRetry(wid, task)
+
+			if err == nil {
+				result.SetTotalDuration(time.Since(start))
 				wp.resultsQueue <- result
+				continue
 			}
+
+			wp.errorQueue <- err
 		}
 	}
 
@@ -124,9 +140,9 @@ func (wp *WorkerPool) worker(wid int) {
 func (wp *WorkerPool) processWithRetry(wid int, task core.Task) (*core.TaskResult, *core.TaskError) {
 
 	var lastError *core.TaskError
-	for attempt := 0; true; attempt++ {
+	for attempt := 1; true; attempt++ {
 
-		if attempt > 0 {
+		if attempt > 1 {
 			delay := wp.retryManager.GetDelay(attempt)
 			log.Printf("[url -> %s] Retry in %.2fs [attempt -> %d/%d] ", task.Url(), delay.Seconds(), attempt, wp.retryManager.MaxRetries())
 			select {
@@ -149,11 +165,19 @@ func (wp *WorkerPool) processWithRetry(wid int, task core.Task) (*core.TaskResul
 		if taskErr == nil {
 			res.SetDuration(execDuration)
 			res.SetRetries(attempt)
+
+			if wp.config.MetricsEnable {
+				wp.metrics.RecordTaskComplete(execDuration, true, int64(attempt))
+			}
 			return res, nil
 		}
 
 		if !wp.retryManager.ShouldRetry(taskErr.Err(), attempt) {
 			lastError = taskErr
+
+			if wp.config.MetricsEnable {
+				wp.metrics.RecordTaskComplete(execDuration, false, int64(attempt))
+			}
 			break
 		}
 	}
@@ -180,13 +204,14 @@ func (wp *WorkerPool) GracefulShutdown(timeout time.Duration) {
 }
 
 func Run() {
-
-	wp := NewWorkerPool(context.Background(), Config{
+	ctx, cancel := context.WithCancel(context.Background())
+	wp := NewWorkerPool(ctx, Config{
 		WorkerCount:     5,
 		QueueSize:       20,
 		TaskTimeout:     time.Second * 2,
 		ShutdownTimeout: time.Second * 5,
 		RateLimit:       120,
+		MetricsEnable:   true,
 	})
 
 	genTasks(wp)
@@ -194,32 +219,39 @@ func Run() {
 	results := wp.Start()
 
 	c := 0
-	for result := range results {
-		c++
-		fmt.Printf("| [%dms(%.2fs)] -- %d:[%d] STATUS `%d` --> LENGTH `%d\n\r",
-			result.Duration().Milliseconds(),
-			result.TotalDuration().Seconds(),
-			result.WorkerID(),
-			result.TaskID(),
-			result.ResponseStatus(),
-			result.ContentLen(),
-		)
-	}
+	go func() {
+		for result := range results {
+			c++
+			fmt.Printf("| [%dms(%.2fs)][retries:%d] -- %d:[%d] STATUS `%d` --> LENGTH `%d\n\r",
+				result.Duration().Milliseconds(),
+				result.TotalDuration().Seconds(),
+				result.Retries(),
+				result.WorkerID(),
+				result.TaskID(),
+				result.ResponseStatus(),
+				result.ContentLen(),
+			)
+		}
+	}()
 
 	ec := 0
-	for e := range wp.errorQueue {
-		ec++
-		fmt.Println("! ---")
-		fmt.Printf("[id:%d ] Url: %s\n\rErr: %s\n\r",
-			e.TaskID(),
-			e.Url(),
-			e.Err().Error(),
-		)
-		fmt.Println("! ---")
-	}
+	go func() {
+		for e := range wp.errorQueue {
+			ec++
+			fmt.Println("! ---")
+			fmt.Printf("[id:%d ] Url: %s\n\rErr: %s\n\r",
+				e.TaskID(),
+				e.Url(),
+				e.Err().Error(),
+			)
+			fmt.Println("! ---")
+		}
+	}()
 
 	fmt.Printf("Total | Success: %d / Error: %d", c, ec)
 
+	cancel()
+	time.Sleep(20 * time.Second)
 }
 
 func genTasks(wp *WorkerPool) {
@@ -233,6 +265,8 @@ func genTasks(wp *WorkerPool) {
 	delay := time.Millisecond * 500
 
 	go func(delay time.Duration) {
+
+		defer close(wp.taskQueue)
 		for i := 0; i < 10; i++ {
 			for idx, url := range urls {
 				task := core.NewHTTPTask(idx*(i+1), url)
