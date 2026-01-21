@@ -1,4 +1,4 @@
-package core
+package modules
 
 import (
 	"sync/atomic"

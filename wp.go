@@ -7,6 +7,7 @@ import (
 	"log"
 	"main/channels/worker_pool/workerpool/core"
 	errs "main/channels/worker_pool/workerpool/errors"
+	"main/channels/worker_pool/workerpool/modules"
 	ratelimiter "main/channels/worker_pool/workerpool/modules/rateLimiter"
 	retry "main/channels/worker_pool/workerpool/modules/retryManager"
 	"net/http"
@@ -38,7 +39,8 @@ type WorkerPool struct {
 	// modules
 	retryManager *retry.RetryManager
 	rateLimiter  *ratelimiter.RateLimiter
-	metrics      core.MetricsCollector
+	metrics      modules.MetricsCollector
+	statistics   modules.StatisticsCollector
 
 	wg     sync.WaitGroup
 	client *http.Client
@@ -51,7 +53,7 @@ func NewWorkerPool(ctx context.Context, config Config) *WorkerPool {
 		resultsQueue: make(chan *core.TaskResult, config.QueueSize),
 		errorQueue:   make(chan *core.TaskError, config.QueueSize),
 		taskQueue:    make(chan core.Task, config.QueueSize),
-		metrics:      &core.Metrics{},
+		metrics:      &modules.Metrics{},
 		wg:           sync.WaitGroup{},
 		retryManager: retry.NewRetryManager("./channels/worker_pool/workerpool/cfg/retry.yaml"),
 		rateLimiter:  ratelimiter.NewRateLimiter(ctx, config.RateLimit),
