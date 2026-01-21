@@ -14,7 +14,7 @@ type StatisticsCollector interface {
 	AvgThroughput() float64 // Tasks per second
 	TasksTotal() int
 	TasksSucceed() int
-	TaskFailed() int
+	TasksFailed() int
 	StartTime() time.Time
 }
 
@@ -37,7 +37,7 @@ func (s *Statistics) TaskFinished(success bool) {
 
 // Getters
 func (s *Statistics) AvgThroughput() float64 {
-	return time.Since(s.startTime).Seconds() / float64(s.TasksTotal())
+	return float64(s.TasksTotal()) / time.Since(s.startTime).Seconds()
 }
 func (s *Statistics) TasksSucceed() int    { return int(s.successfull.Load()) }
 func (s *Statistics) TasksFailed() int     { return int(s.failed.Load()) }
