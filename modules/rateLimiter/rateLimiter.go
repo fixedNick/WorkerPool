@@ -23,14 +23,14 @@ func NewRateLimiter(ctx context.Context, rpm int) *RateLimiter {
 		tokens:    make(chan struct{}, rpm),
 	}
 
-	go rl.fillTokens(ctx)
+	go rl.FillTokens(ctx)
 	return rl
 }
 
 // filling channel with `rpm` to future read from this channel.
 // If channel is empty - wait
 // Otherwise current rpm is lower than limit - continue
-func (rl *RateLimiter) fillTokens(ctx context.Context) {
+func (rl *RateLimiter) FillTokens(ctx context.Context) {
 	t := time.NewTicker(time.Minute / time.Duration(rl.rpm))
 	defer t.Stop()
 

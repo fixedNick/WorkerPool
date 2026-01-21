@@ -37,8 +37,8 @@ type WorkerPool struct {
 	taskQueue    chan core.Task
 
 	// modules
-	retryManager *retry.RetryManager
-	rateLimiter  *ratelimiter.RateLimiter
+	retryManager modules.RetryManager
+	rateLimiter  modules.RateLimiter
 	metrics      modules.MetricsCollector
 	statistics   modules.StatisticsCollector
 
