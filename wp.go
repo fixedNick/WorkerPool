@@ -32,9 +32,10 @@ type WorkerPool struct {
 	config Config
 	ctx    context.Context
 
-	resultsQueue chan *core.TaskResult
-	errorQueue   chan *core.TaskError
-	taskQueue    chan core.Task
+	resultsQueue      chan *core.TaskResult
+	errorQueue        chan *core.TaskError
+	taskQueue         chan core.Task
+	highPriorityQueue chan core.Task
 
 	// modules
 	retryManager modules.RetryManager
@@ -115,41 +116,62 @@ func (wp *WorkerPool) worker(wid int) {
 		select {
 		case <-wp.ctx.Done():
 			return
-		case task, ok := <-wp.taskQueue:
+		case task, ok := <-wp.highPriorityQueue:
 			if !ok {
 				// channel closed, stop worker
 				return
 			}
-
-			if err := wp.rateLimiter.Wait(wp.ctx); err != nil {
+			wp.executeTask(wid, task)
+		default:
+			select {
+			case <-wp.ctx.Done():
 				return
+			case task, ok := <-wp.highPriorityQueue:
+				if !ok {
+					// channel closed, stop worker
+					return
+				}
+				wp.executeTask(wid, task)
+
+			case task, ok := <-wp.taskQueue:
+				if !ok {
+					// channel closed, stop worker
+					return
+				}
+				wp.executeTask(wid, task)
 			}
-
-			wp.statistics.TaskStart()
-			if wp.config.MetricsEnable {
-				wp.metrics.RecordQueuePop()
-				wp.metrics.RecordTaskStart()
-			}
-
-			start := time.Now()
-			result, err := wp.processWithRetry(wid, task)
-
-			log.Printf("AvgTaskPerSec: %.2f. %d/%d [%d]",
-				wp.statistics.AvgThroughput(),
-				wp.statistics.TasksSucceed(),
-				wp.statistics.TasksFailed(),
-				wp.statistics.TasksTotal(),
-			)
-			if err == nil {
-				result.SetTotalDuration(time.Since(start))
-				wp.resultsQueue <- result
-				continue
-			}
-
-			wp.errorQueue <- err
 		}
 	}
 
+}
+
+func (wp *WorkerPool) executeTask(wid int, task core.Task) {
+	if err := wp.rateLimiter.Wait(wp.ctx); err != nil {
+		return
+	}
+
+	wp.statistics.TaskStart()
+	if wp.config.MetricsEnable {
+		wp.metrics.RecordQueuePop()
+		wp.metrics.RecordTaskStart()
+	}
+
+	start := time.Now()
+	result, err := wp.processWithRetry(wid, task)
+
+	log.Printf("AvgTaskPerSec: %.2f. %d/%d [%d]",
+		wp.statistics.AvgThroughput(),
+		wp.statistics.TasksSucceed(),
+		wp.statistics.TasksFailed(),
+		wp.statistics.TasksTotal(),
+	)
+	if err == nil {
+		result.SetTotalDuration(time.Since(start))
+		wp.resultsQueue <- result
+		return
+	}
+
+	wp.errorQueue <- err
 }
 
 func (wp *WorkerPool) processWithRetry(wid int, task core.Task) (*core.TaskResult, *core.TaskError) {
